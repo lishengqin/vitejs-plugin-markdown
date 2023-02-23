@@ -1,18 +1,87 @@
-# Vue 3 + TypeScript + Vite
+# vitejs-plugin-markdown
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+手写一个 vite 插件，编译 vue 文件中引入的 md 文件
 
-## Recommended IDE Setup
+### 安装项目
 
-- [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur) + [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin).
+```
+yarn install or npm install
+```
 
-## Type Support For `.vue` Imports in TS
+### 启动项目
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin) to make the TypeScript language service aware of `.vue` types.
+```
+yarn dev or npm run dev
+```
 
-If the standalone TypeScript plugin doesn't feel fast enough to you, Volar has also implemented a [Take Over Mode](https://github.com/johnsoncodehk/volar/discussions/471#discussioncomment-1361669) that is more performant. You can enable it by the following steps:
+## markdownPlugin 文件中的 index 就是插件内容
 
-1. Disable the built-in TypeScript Extension
-   1. Run `Extensions: Show Built-in Extensions` from VSCode's command palette
-   2. Find `TypeScript and JavaScript Language Features`, right click and select `Disable (Workspace)`
-2. Reload the VSCode window by running `Developer: Reload Window` from the command palette.
+```ts
+import { Plugin } from 'vite';
+/* @ts-ignore */
+import path from 'path';
+/* @ts-ignore */
+import fs from 'fs';
+import MarkdownIt from 'markdown-it';
+
+const markdownExp = /<g-markdown[^]*?<\/g-markdown>/g;
+const filePathRE = /(?<=file=("|')).*(?=('|"))/;
+const md = new MarkdownIt();
+
+const mdRelationMap = {};
+function markdownPlugin(): Plugin {
+  return {
+    /* 插件名称 */
+    name: 'vite:markdown',
+    /**强制插件排序,
+     * pre：在 Vite 核心插件之前调用该插件
+     * post：在 Vite 构建插件之后调用该插件
+     * 默认：在 Vite 核心插件之后调用该插件
+     */
+    // 我们需要在之前调用，因为我们要的是源码字符串，而不是编译解析后的
+    enforce: 'pre',
+    /* 配置热重载 */
+    handleHotUpdate(ctx) {
+      const { file, server, modules } = ctx;
+      if (path.extname(file) !== '.md') return;
+      const relationIds = mdRelationMap[path.resolve(file)];
+      const relationModules = [];
+      relationIds.forEach(relationId => {
+        const relationModule = [...server.moduleGraph.getModulesByFile(relationId)!][0];
+        server.ws.send({
+          type: 'update',
+          updates: [
+            {
+              type: 'js-update',
+              path: relationModule.file!,
+              acceptedPath: relationModule.file!,
+              timestamp: new Date().getTime(),
+            },
+          ],
+        });
+        relationModules.push(relationModule);
+      });
+      return [...modules, ...relationModules];
+    },
+    transform(code, id, opt) {
+      /* 在编译和构建会执行该方法 */
+      if (id.indexOf('.vue') > -1) {
+        const markdownMathList = code.match(markdownExp) || [];
+        markdownMathList.forEach(one => {
+          let mdPath = one.match(filePathRE)[0];
+          const mdFilePath = path.resolve(path.dirname(id), mdPath);
+          const mdText = fs.readFileSync(mdFilePath, 'utf-8');
+          const htmlText = md.render(mdText);
+          code = code.replace(one, htmlText);
+          if (!mdRelationMap[mdFilePath]) {
+            mdRelationMap[mdFilePath] = [];
+          }
+          mdRelationMap[mdFilePath].push(id);
+        });
+        return code;
+      }
+    },
+  };
+}
+export default markdownPlugin;
+```
